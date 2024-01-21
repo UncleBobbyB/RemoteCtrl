@@ -15,10 +15,10 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="RemoteClient.h">
+    <ClInclude Include="RemoteServer.h">
       <Filter>头文件</Filter>
     </ClInclude>
-    <ClInclude Include="RemoteClientDlg.h">
+    <ClInclude Include="RemoteServerDlg.h">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="framework.h">
@@ -33,36 +33,15 @@
     <ClInclude Include="pch.h">
       <Filter>头文件</Filter>
     </ClInclude>
-    <ClInclude Include="ClientController.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="NetController.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="blocking_queue.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="observable.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="concurrent.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="CFrameSocket.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="thread_pool.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="CPacket.h">
+    <ClInclude Include="SimulateMouse.h">
       <Filter>头文件</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="RemoteClient.cpp">
+    <ClCompile Include="RemoteServer.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
-    <ClCompile Include="RemoteClientDlg.cpp">
+    <ClCompile Include="RemoteServerDlg.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="pch.cpp">
@@ -70,17 +49,17 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ResourceCompile Include="RemoteClient.rc">
+    <ResourceCompile Include="RemoteServer.rc">
       <Filter>资源文件</Filter>
     </ResourceCompile>
   </ItemGroup>
   <ItemGroup>
-    <None Include="res\RemoteClient.rc2">
+    <None Include="res\RemoteServer.rc2">
       <Filter>资源文件</Filter>
     </None>
   </ItemGroup>
   <ItemGroup>
-    <Image Include="res\RemoteClient.ico">
+    <Image Include="res\RemoteServer.ico">
       <Filter>资源文件</Filter>
     </Image>
   </ItemGroup>

@@ -7,38 +7,39 @@
 #include "RemoteClient.h"
 #include "RemoteClientDlg.h"
 #include "afxdialogex.h"
+#include "ClientController.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
 #endif
 
+#define WM_FRAME_DATA_AVAILABLE (WM_USER + 110)
 
 // 用于应用程序“关于”菜单项的 CAboutDlg 对话框
 
-class CAboutDlg : public CDialogEx
-{
+class CAboutDlg : public CDialogEx {
 public:
 	CAboutDlg();
 
-// 对话框数据
+	// 对话框数据
 #ifdef AFX_DESIGN_TIME
 	enum { IDD = IDD_ABOUTBOX };
 #endif
 
-	protected:
+protected:
 	virtual void DoDataExchange(CDataExchange* pDX);    // DDX/DDV 支持
 
-// 实现
+	// 实现
 protected:
 	DECLARE_MESSAGE_MAP()
+public:
+	afx_msg void OnFile();
 };
 
-CAboutDlg::CAboutDlg() : CDialogEx(IDD_ABOUTBOX)
-{
+CAboutDlg::CAboutDlg() : CDialogEx(IDD_ABOUTBOX) {
 }
 
-void CAboutDlg::DoDataExchange(CDataExchange* pDX)
-{
+void CAboutDlg::DoDataExchange(CDataExchange* pDX) {
 	CDialogEx::DoDataExchange(pDX);
 }
 
@@ -48,30 +49,92 @@ END_MESSAGE_MAP()
 
 // CRemoteClientDlg 对话框
 
-
-
 CRemoteClientDlg::CRemoteClientDlg(CWnd* pParent /*=nullptr*/)
-	: CDialogEx(IDD_REMOTECLIENT_DIALOG, pParent)
-{
+	: CDialogEx(IDD_REMOTECLIENT_DIALOG, pParent) {
 	m_hIcon = AfxGetApp()->LoadIcon(IDR_MAINFRAME);
 }
 
-void CRemoteClientDlg::DoDataExchange(CDataExchange* pDX)
-{
+void CRemoteClientDlg::DoDataExchange(CDataExchange* pDX) {
 	CDialogEx::DoDataExchange(pDX);
+}
+
+std::pair<double, double> CRemoteClientDlg::GetNormalizedMousePosition() {
+	POINT pt;
+	GetCursorPos(&pt); // Get global cursor position
+	m_videoFrame.ScreenToClient(&pt);
+
+	RECT rect;
+	m_videoFrame.GetClientRect(&rect);
+	
+	double normalizedX = double(pt.x) / double(rect.right - rect.left);
+	double normalizedY = double(pt.y) / double(rect.bottom - rect.top);
+
+	return { normalizedX, normalizedY };
 }
 
 BEGIN_MESSAGE_MAP(CRemoteClientDlg, CDialogEx)
 	ON_WM_SYSCOMMAND()
 	ON_WM_PAINT()
 	ON_WM_QUERYDRAGICON()
+	ON_WM_TIMER()
+	ON_WM_MOUSEMOVE()
+	ON_WM_LBUTTONDOWN()
+	ON_WM_LBUTTONUP()
+	ON_WM_LBUTTONDBLCLK()
+	ON_WM_RBUTTONDOWN()
+	ON_WM_RBUTTONUP()
+	// ON_WM_CONTEXTMENU()
+	ON_MESSAGE(WM_FRAME_DATA_AVAILABLE, CRemoteClientDlg::DisplayFrame)
 END_MESSAGE_MAP()
 
 
 // CRemoteClientDlg 消息处理程序
 
-BOOL CRemoteClientDlg::OnInitDialog()
-{
+UINT MouseEventWorkerThread(LPVOID pParam) {
+	CRemoteClientDlg *thiz = static_cast<CRemoteClientDlg*>(pParam);
+	MSG msg;
+	while (GetMessage(&msg, nullptr, 0, 0)) {
+		POINT point;
+		point.x = GET_X_LPARAM(msg.lParam);
+		point.y = GET_Y_LPARAM(msg.lParam);
+		CRect rect;
+		thiz->m_videoFrame.GetClientRect(&rect);
+		thiz->m_videoFrame.ClientToScreen(&rect);
+		thiz->ScreenToClient(&rect);
+		if (!rect.PtInRect(point)) {
+			continue;
+		}
+
+		switch (msg.message) {
+		case WM_MOUSEMOVE:
+			CClientController::sendMouseEvent(mouse_move, thiz->GetNormalizedMousePosition());
+			break;
+		case WM_LBUTTONDOWN:
+			CClientController::sendMouseEvent(lb_down, thiz->GetNormalizedMousePosition());
+			break;
+		case WM_LBUTTONUP:
+			CClientController::sendMouseEvent(lb_up, thiz->GetNormalizedMousePosition());
+			break;
+		case WM_LBUTTONDBLCLK:
+			CClientController::sendMouseEvent(lb_2click, thiz->GetNormalizedMousePosition());
+			break;
+		case WM_RBUTTONDOWN:
+			CClientController::sendMouseEvent(rb_down, thiz->GetNormalizedMousePosition());
+			break;
+		case WM_RBUTTONUP:
+			CClientController::sendMouseEvent(rb_up, thiz->GetNormalizedMousePosition());
+			break;
+		default:
+			TRACE("Unknown mouse event\n");
+			break;
+		}
+			TranslateMessage(&msg);
+		DispatchMessage(&msg);
+	}
+	return 0;
+}
+
+BOOL CRemoteClientDlg::OnInitDialog() {
 	CDialogEx::OnInitDialog();
 
 	// 将“关于...”菜单项添加到系统菜单中。
@@ -81,14 +144,12 @@ BOOL CRemoteClientDlg::OnInitDialog()
 	ASSERT(IDM_ABOUTBOX < 0xF000);
 
 	CMenu* pSysMenu = GetSystemMenu(FALSE);
-	if (pSysMenu != nullptr)
-	{
+	if (pSysMenu != nullptr) {
 		BOOL bNameValid;
 		CString strAboutMenu;
 		bNameValid = strAboutMenu.LoadString(IDS_ABOUTBOX);
 		ASSERT(bNameValid);
-		if (!strAboutMenu.IsEmpty())
-		{
+		if (!strAboutMenu.IsEmpty()) {
 			pSysMenu->AppendMenu(MF_SEPARATOR);
 			pSysMenu->AppendMenu(MF_STRING, IDM_ABOUTBOX, strAboutMenu);
 		}
@@ -101,18 +162,22 @@ BOOL CRemoteClientDlg::OnInitDialog()
 
 	// TODO: 在此添加额外的初始化代码
 
+	m_videoFrame.SubclassDlgItem(IDC_VIDEO_FRAME, this);
+
+	pMouseEventThread = AfxBeginThread(MouseEventWorkerThread, this);
+	MouseEventThreadID = pMouseEventThread->m_nThreadID;
+
+	// 控制器初始化
+	CClientController::init(ip, port);
+
 	return TRUE;  // 除非将焦点设置到控件，否则返回 TRUE
 }
 
-void CRemoteClientDlg::OnSysCommand(UINT nID, LPARAM lParam)
-{
-	if ((nID & 0xFFF0) == IDM_ABOUTBOX)
-	{
+void CRemoteClientDlg::OnSysCommand(UINT nID, LPARAM lParam) {
+	if ((nID & 0xFFF0) == IDM_ABOUTBOX) {
 		CAboutDlg dlgAbout;
 		dlgAbout.DoModal();
-	}
-	else
-	{
+	} else {
 		CDialogEx::OnSysCommand(nID, lParam);
 	}
 }
@@ -121,10 +186,8 @@ void CRemoteClientDlg::OnSysCommand(UINT nID, LPARAM lParam)
 //  来绘制该图标。  对于使用文档/视图模型的 MFC 应用程序，
 //  这将由框架自动完成。
 
-void CRemoteClientDlg::OnPaint()
-{
-	if (IsIconic())
-	{
+void CRemoteClientDlg::OnPaint() {
+	if (IsIconic()) {
 		CPaintDC dc(this); // 用于绘制的设备上下文
 
 		SendMessage(WM_ICONERASEBKGND, reinterpret_cast<WPARAM>(dc.GetSafeHdc()), 0);
@@ -139,17 +202,107 @@ void CRemoteClientDlg::OnPaint()
 
 		// 绘制图标
 		dc.DrawIcon(x, y, m_hIcon);
-	}
-	else
-	{
+	} else {
 		CDialogEx::OnPaint();
 	}
 }
 
 //当用户拖动最小化窗口时系统调用此函数取得光标
 //显示。
-HCURSOR CRemoteClientDlg::OnQueryDragIcon()
-{
+HCURSOR CRemoteClientDlg::OnQueryDragIcon() {
 	return static_cast<HCURSOR>(m_hIcon);
 }
 
+LRESULT CRemoteClientDlg::DisplayFrame(WPARAM wParam, LPARAM lParam) {
+	std::shared_ptr<CImage> pImage = CClientController::getFrame();
+	CDC* pDC = m_videoFrame.GetDC();
+	if (pDC == nullptr)
+		throw std::runtime_error("video frame dc is null");
+
+	CRect rect;
+	m_videoFrame.GetClientRect(&rect);
+	if (pImage != nullptr) // 拖拽窗口时有可能会使CImage丢失DC，因此需要额外判断
+		pImage->Draw(pDC->m_hDC, rect);
+
+	m_videoFrame.ReleaseDC(pDC);
+	return 0;
+}
+
+void CRemoteClientDlg::OnTimer(UINT_PTR nIDEvent) {
+	switch (nIDEvent) {
+	default:
+		break;
+	}
+
+	CDialogEx::OnTimer(nIDEvent);
+}
+
+
+void CRemoteClientDlg::OnContextMenu(CWnd* pWnd, CPoint point) {
+}
+
+void CRemoteClientDlg::OnMouseMove(UINT nFlags, CPoint point) {
+	// Pack the mouse coordinates into a WPARAM and LPARAM
+	WPARAM wParam = 0;
+	LPARAM lParam = MAKELPARAM(point.x, point.y);
+
+	// Post the message to the worker thread
+	PostThreadMessage(MouseEventThreadID, WM_MOUSEMOVE, wParam, lParam);
+
+	CDialogEx::OnMouseMove(nFlags, point);
+}
+
+void CRemoteClientDlg::OnLButtonDown(UINT nFlags, CPoint point) {
+	WPARAM wParam = 0;
+	LPARAM lParam = MAKELPARAM(point.x, point.y);
+
+	PostThreadMessage(MouseEventThreadID, WM_LBUTTONDOWN, wParam, lParam);
+
+	CDialogEx::OnLButtonDown(nFlags, point); // Call default handler
+}
+
+void CRemoteClientDlg::OnLButtonUp(UINT nFlags, CPoint point) {
+	WPARAM wParam = 0;
+	LPARAM lParam = MAKELPARAM(point.x, point.y);
+
+	PostThreadMessage(MouseEventThreadID, WM_LBUTTONUP, wParam, lParam);
+
+	CDialogEx::OnLButtonUp(nFlags, point); // Call default handler
+}
+
+void CRemoteClientDlg::OnLButtonDblClk(UINT nFlags, CPoint point) {
+	WPARAM wParam = 0;
+	LPARAM lParam = MAKELPARAM(point.x, point.y);
+
+	PostThreadMessage(MouseEventThreadID, WM_LBUTTONDBLCLK, wParam, lParam);
+
+	CDialogEx::OnLButtonDblClk(nFlags, point);
+}
+
+void CRemoteClientDlg::OnRButtonDown(UINT nFlags, CPoint point) {
+	WPARAM wParam = 0;
+	LPARAM lParam = MAKELPARAM(point.x, point.y);
+
+	PostThreadMessage(MouseEventThreadID, WM_RBUTTONDOWN, wParam, lParam);
+
+	CDialogEx::OnRButtonDblClk(nFlags, point);
+}
+
+void CRemoteClientDlg::OnRButtonUp(UINT nFlags, CPoint point) {
+	WPARAM wParam = 0;
+	LPARAM lParam = MAKELPARAM(point.x, point.y);
+
+	PostThreadMessage(MouseEventThreadID, WM_RBUTTONUP, wParam, lParam);
+
+	CDialogEx::OnRButtonUp(nFlags, point);
+}
+
+
+void CRemoteClientDlg::OnFile() {
+	// TODO: 在此添加命令处理程序代码
+}
+
+
+void CAboutDlg::OnFile() {
+	// TODO: 在此添加命令处理程序代码
+}
