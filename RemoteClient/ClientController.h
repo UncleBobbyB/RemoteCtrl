@@ -42,6 +42,14 @@ public:
 		CNetController::send_cmd(buffer_size, buffer);
 	}
 
+	static void requestDriveInfo() {
+		CNetController::request_drive_info();
+	}
+
+	static void requestDirInfo(CString strPath) {
+		CNetController::request_dir_info(strPath);
+	}
+
 
 private:
 	inline static const char* strServerIP_;

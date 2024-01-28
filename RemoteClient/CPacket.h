@@ -6,6 +6,9 @@
 
 enum CMD_Flag {
 	frame,
+	drive_info,
+	dir_info,
+	invalid_dir,
 	mouse_move,
 	lb_down,
 	lb_up,
@@ -13,7 +16,8 @@ enum CMD_Flag {
 	rb_down,
 	rb_up,
 	mb_clicked,
-	mouse_wheel
+	mouse_wheel,
+	unknown
 };
 
 class CPacketHeader {

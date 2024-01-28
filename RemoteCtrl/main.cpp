@@ -1,3 +1,4 @@
+/*
 #include <stdio.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -9,6 +10,7 @@
 #include "CPacket.h"
 #include <cassert>
 #include <thread>
+#include <afx.h>
 
 void CaptureScreen(CImage& screen) {
 	if (!screen.IsNull())
@@ -128,11 +130,9 @@ void frame_thread_routine() {
 	}
 }
 
-void mouse_event_thread_rountine() {
 
-}
 
-int main() {
+int main1() {
 	WSADATA wsaData;
 	int iResult;
 
@@ -207,3 +207,72 @@ int main() {
 
 	return 0;
 }
+
+*/
+
+#define _AFXDLL
+#include <windows.h>
+#include <iostream>
+#include <vector>
+#include <string>
+
+struct FileInfo {
+	std::string path;
+	bool isDirectory;
+};
+
+void ListDirectoryContents(const std::string& directoryPath, std::vector<FileInfo>& fileInfos) {
+	WIN32_FIND_DATA findFileData;
+	HANDLE hFind = FindFirstFile((directoryPath + "\\*").c_str(), &findFileData);
+
+	if (hFind == INVALID_HANDLE_VALUE) {
+		return;
+	}
+
+	do {
+		if (strcmp(findFileData.cFileName, ".") != 0 && strcmp(findFileData.cFileName, "..") != 0) {
+			FileInfo fileInfo;
+			fileInfo.path = directoryPath + "\\" + findFileData.cFileName;
+			fileInfo.isDirectory = (findFileData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+			fileInfos.push_back(fileInfo);
+
+			if (fileInfo.isDirectory) {
+				// Recursively list subdirectories
+				std::cerr << fileInfo.path << std::endl;
+				ListDirectoryContents(fileInfo.path, fileInfos);
+			}
+		}
+	} while (FindNextFile(hFind, &findFileData) != 0);
+
+	FindClose(hFind);
+}
+
+std::vector<FileInfo> GetSystemDrivesInfo() {
+	std::vector<FileInfo> allFiles;
+	DWORD driveMask = GetLogicalDrives();
+	char driveLetter = 'A';
+
+	while (driveMask) {
+		if (driveMask & 1) {
+			std::string driveStr = std::string(1, driveLetter) + ":";
+			if (GetDriveType((driveStr + "\\").c_str()) == DRIVE_FIXED) {
+				ListDirectoryContents(driveStr, allFiles);
+			}
+		}
+		driveLetter++;
+		driveMask >>= 1;
+	}
+
+	return allFiles;
+}
+
+int main() {
+	std::vector<FileInfo> fileInfos = GetSystemDrivesInfo();
+
+	for (const auto& fileInfo : fileInfos) {
+		std::cout << (fileInfo.isDirectory ? "[D] " : "[F] ") << fileInfo.path << std::endl;
+	}
+
+	return 0;
+}
+

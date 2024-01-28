@@ -194,10 +194,12 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="blocking_queue.h" />
+    <ClInclude Include="CFileInfoDlg.h" />
     <ClInclude Include="CFrameSocket.h" />
     <ClInclude Include="ClientController.h" />
     <ClInclude Include="concurrent.h" />
     <ClInclude Include="CPacket.h" />
+    <ClInclude Include="file_info.h" />
     <ClInclude Include="framework.h" />
     <ClInclude Include="NetController.h" />
     <ClInclude Include="observable.h" />
@@ -209,6 +211,7 @@
     <ClInclude Include="thread_pool.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="CFileInfoDlg.cpp" />
     <ClCompile Include="pch.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Create</PrecompiledHeader>

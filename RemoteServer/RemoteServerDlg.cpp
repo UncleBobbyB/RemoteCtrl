@@ -14,6 +14,7 @@
 #include <iostream>
 #include <thread>
 #include "SimulateMouse.h"
+#include <file_info.h>
 
 // CRemoteServerDlg 对话框
 
@@ -154,7 +155,7 @@ void CRemoteServerDlg::frame_thread_routine() {
 	}
 }
 
-void CRemoteServerDlg::handle_cmd(CMD_Flag flag, std::shared_ptr<BYTE[]> data = nullptr) {
+inline void handle_mouse_cmd(CMD_Flag flag, std::shared_ptr<BYTE[]> data) {
 	std::pair<double, double> p;
 	int screenWidth = GetSystemMetrics(SM_CXSCREEN);
 	int screenHeight = GetSystemMetrics(SM_CYSCREEN);
@@ -200,8 +201,55 @@ void CRemoteServerDlg::handle_cmd(CMD_Flag flag, std::shared_ptr<BYTE[]> data = 
 	}
 }
 
+void CRemoteServerDlg::mouse_cmd_thread_routine() {
+	while (1) {
+		auto [header, data] = mouse_cmd_to_handle_.dequeue(); // will be blocked here;
+		CMD_Flag flag = header.cmd;
+		assert(header.len == sizeof(std::pair<double, double>)); // TODO: might need to remove this
+		handle_mouse_cmd(flag, data);
+	}
+}
 
-void CRemoteServerDlg::cmd_thread_routine() {
+inline bool is_mouse_cmd(CMD_Flag flag) {
+	bool ret = (flag == mouse_move) || (flag == lb_down) || (flag == lb_up) || (flag == lb_2click) || (flag == rb_down) || (flag == rb_up);
+	return ret;
+}
+
+void CRemoteServerDlg::handle_cmd(CPacketHeader header, std::shared_ptr<BYTE[]> data = nullptr) {
+	if (is_mouse_cmd(header.cmd)) {
+		mouse_cmd_to_handle_.enqueue(std::make_pair(header, data)); // 异步执行鼠标响应操作
+	}  else if (header.cmd == drive_info) {
+		auto [data_len, data] = SerializeDriveInfo(GetDrivesInfo());
+		CMD_Flag flag = drive_info;
+		std::shared_ptr<BYTE[]> buffer(new BYTE[sizeof(flag) + data_len]);
+		memcpy(buffer.get(), &flag, sizeof(flag));
+		if (data_len)
+			memcpy(buffer.get() + sizeof(flag), data.get(), data_len);
+		IOqu_cmd_to_send_.enqueue(std::make_pair(sizeof(flag) + data_len, buffer));
+	} else if (header.cmd == dir_info) {
+		CString strPath(reinterpret_cast<const TCHAR*>(data.get()), header.len / sizeof(TCHAR));
+		auto files = GatherDirInfo(CStringToStdString(strPath));
+		if (!files.has_value()) {
+			// no such dir
+			CMD_Flag flag = invalid_dir;
+			std::shared_ptr<BYTE[]> buffer(new BYTE[sizeof(flag) + header.len]);
+			memcpy(buffer.get(), &flag, sizeof(flag));
+			memcpy(buffer.get() + sizeof(flag), data.get(), header.len);
+			IOqu_cmd_to_send_.enqueue(std::make_pair(sizeof(flag) + header.len, buffer));
+			return;
+		}
+		CMD_Flag flag = dir_info;
+		auto [data_len, data] = SerializeDirInfo(files.value());
+		size_t buffer_size = sizeof(flag) + data_len;
+		std::shared_ptr<BYTE[]> buffer(new BYTE[buffer_size]);
+		memcpy(buffer.get(), &flag, sizeof(flag));
+		memcpy(buffer.get() + sizeof(flag), data.get(), data_len);
+		IOqu_cmd_to_send_.enqueue(std::make_pair(buffer_size, buffer));
+	}
+}
+
+
+void CRemoteServerDlg::cmd_recv_thread_routine() {
 	SOCKET ListenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 	if (ListenSocket == INVALID_SOCKET) {
 		TRACE("Error at socket(): %ld\n", WSAGetLastError());
@@ -253,8 +301,7 @@ void CRemoteServerDlg::cmd_thread_routine() {
 				data = std::shared_ptr<BYTE[]>(new BYTE[data_len]);
 				memcpy(data.get(), buffer.get() + header_len, data_len);
 			}
-			//thread_pool_.add_task(&CRemoteServerDlg::handle_cmd, this, header.cmd, data);
-			handle_cmd(header.cmd, data);
+			handle_cmd(header, data);
 			total_received = 0;
 			data_len = 0;
 		}
@@ -286,6 +333,7 @@ void CRemoteServerDlg::cmd_thread_routine() {
 				break;
 			}
 			if (n < 0) {
+			//thread_pool_.add_task(&CRemoteServerDlg::handle_cmd, this, header, data);
 				TRACE("socket error\n");
 				break;
 			}
@@ -294,6 +342,54 @@ void CRemoteServerDlg::cmd_thread_routine() {
 			assert(total_received <= header_len + data_len);
 		}
 
+	}
+}
+
+void CRemoteServerDlg::cmd_send_thread_routine() {
+	SOCKET ListenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	if (ListenSocket == INVALID_SOCKET) {
+		TRACE("Error at socket(): %ld\n", WSAGetLastError());
+		WSACleanup();
+		return;
+	}
+
+	sockaddr_in service;
+	service.sin_family = AF_INET;
+	service.sin_addr.s_addr = INADDR_ANY; // or inet_addr("127.0.0.1");
+	service.sin_port = htons(9529); // Port number
+
+	if (bind(ListenSocket, (SOCKADDR*)&service, sizeof(service)) == SOCKET_ERROR) {
+		TRACE("bind() failed.\n");
+		closesocket(ListenSocket);
+		WSACleanup();
+		return;
+	}
+
+	if (listen(ListenSocket, SOMAXCONN) == SOCKET_ERROR) {
+		TRACE("Error at listen(): %ld\n", WSAGetLastError());
+		closesocket(ListenSocket);
+		WSACleanup();
+		return;
+	}
+
+	SOCKET clnt_sock;
+	clnt_sock = accept(ListenSocket, NULL, NULL);
+	if (clnt_sock == INVALID_SOCKET) {
+		TRACE("accept failed: %d\n", WSAGetLastError());
+		closesocket(ListenSocket);
+		WSACleanup();
+		return;
+	}
+
+	TRACE("accepted\n");
+
+	while (1) {
+		auto [buffer_size, buffer] = IOqu_cmd_to_send_.dequeue(); // will be blocked here
+		CMD_Flag cmd = *reinterpret_cast<CMD_Flag*>(buffer.get());
+		CPacketHeader header(cmd, buffer_size - sizeof(cmd));
+		send_all(clnt_sock, reinterpret_cast<char*>(&header), sizeof(header));
+		if (header.len)
+			send_all(clnt_sock, reinterpret_cast<char*>(buffer.get()) + sizeof(CMD_Flag), header.len);
 	}
 }
 
@@ -319,11 +415,21 @@ BOOL CRemoteServerDlg::OnInitDialog()
 		return 1;
 	}
 
-	std::thread frame_thread(&CRemoteServerDlg::frame_thread_routine, this);
-	frame_thread.detach();
+	std::thread mouse_handle_thread(&CRemoteServerDlg::mouse_cmd_thread_routine, this);
+	if (mouse_handle_thread.joinable())
+		mouse_handle_thread.detach();
 
-	std::thread cmd_thread(&CRemoteServerDlg::cmd_thread_routine, this);
-	cmd_thread.detach();
+	std::thread frame_thread(&CRemoteServerDlg::frame_thread_routine, this);
+	if (frame_thread.joinable())
+		frame_thread.detach();
+
+	std::thread cmd_recv_thread(&CRemoteServerDlg::cmd_recv_thread_routine, this);
+	if (cmd_recv_thread.joinable())
+		cmd_recv_thread.detach();
+
+	std::thread cmd_send_thread(&CRemoteServerDlg::cmd_send_thread_routine, this);
+	if (cmd_send_thread.joinable())
+		cmd_send_thread.detach();
 
 	return TRUE;  // 除非将焦点设置到控件，否则返回 TRUE
 }

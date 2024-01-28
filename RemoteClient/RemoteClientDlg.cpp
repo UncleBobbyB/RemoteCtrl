@@ -7,11 +7,11 @@
 #include "RemoteClient.h"
 #include "RemoteClientDlg.h"
 #include "afxdialogex.h"
-#include "ClientController.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
 #endif
+#include "CFileInfoDlg.h"
 
 #define WM_FRAME_DATA_AVAILABLE (WM_USER + 110)
 
@@ -85,6 +85,9 @@ BEGIN_MESSAGE_MAP(CRemoteClientDlg, CDialogEx)
 	ON_WM_RBUTTONUP()
 	// ON_WM_CONTEXTMENU()
 	ON_MESSAGE(WM_FRAME_DATA_AVAILABLE, CRemoteClientDlg::DisplayFrame)
+	ON_COMMAND(ID_FILE, &CRemoteClientDlg::OnFile)
+	ON_MESSAGE(WM_DIR_TREE_UPDATED, CRemoteClientDlg::OnDirTreeUpdated)
+	ON_MESSAGE(WM_DIR_TREE_INVALID_DIR, CRemoteClientDlg::OnInvalidDir)
 END_MESSAGE_MAP()
 
 
@@ -167,6 +170,14 @@ BOOL CRemoteClientDlg::OnInitDialog() {
 	pMouseEventThread = AfxBeginThread(MouseEventWorkerThread, this);
 	MouseEventThreadID = pMouseEventThread->m_nThreadID;
 
+	// 文件查看对话框初始化
+	//m_fileInfoDlg.dirTree.SubclassDlgItem(IDC_TREE, this);
+	//m_fileInfoDlg.fileList.SubclassDlgItem(IDC_LIST, this);
+	assert(m_fileInfoDlg.Create(IDD_FILE_INFO_DIALOG, this));
+	CNetController::set_pDirTree(&(m_fileInfoDlg.dirTree));
+	CNetController::set_pFileTree(&(m_fileInfoDlg.fileList));
+	CNetController::set_pLastItem(&(m_fileInfoDlg.lastItemSelected));
+
 	// 控制器初始化
 	CClientController::init(ip, port);
 
@@ -225,6 +236,20 @@ LRESULT CRemoteClientDlg::DisplayFrame(WPARAM wParam, LPARAM lParam) {
 		pImage->Draw(pDC->m_hDC, rect);
 
 	m_videoFrame.ReleaseDC(pDC);
+	return 0;
+}
+
+LRESULT CRemoteClientDlg::OnDirTreeUpdated(WPARAM wParam, LPARAM lParam) {
+	m_fileInfoDlg.Invalidate();
+	m_fileInfoDlg.UpdateWindow();
+
+	return 0;
+}
+
+LRESULT CRemoteClientDlg::OnInvalidDir(WPARAM wParam, LPARAM lParam) {
+	if (m_fileInfoDlg.GetSafeHwnd())
+		m_fileInfoDlg.PostMessage(WM_DIR_TREE_INVALID_DIR, wParam, lParam);
+
 	return 0;
 }
 
@@ -300,9 +325,6 @@ void CRemoteClientDlg::OnRButtonUp(UINT nFlags, CPoint point) {
 
 void CRemoteClientDlg::OnFile() {
 	// TODO: 在此添加命令处理程序代码
-}
 
-
-void CAboutDlg::OnFile() {
-	// TODO: 在此添加命令处理程序代码
+	m_fileInfoDlg.ShowWindow(SW_SHOW);
 }

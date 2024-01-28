@@ -4,9 +4,13 @@
 
 #pragma once
 #include <memory>
+#include "ClientController.h"
+#include <memory>
+#include "CFileInfoDlg.h"
+#include "CFileInfoDlg.h"
 
 //#define ip "127.0.0.1"
-#define ip "10.0.0.18"
+#define ip "192.168.56.102"
 #define port 9527
 
 #define WM_FRAME_DATA_AVAILABLE (WM_USER + 110)
@@ -31,6 +35,7 @@ virtual void DoDataExchange(CDataExchange* pDX);	// DDX/DDV 支持
 //protected:
 public:
 	HICON m_hIcon;
+	CFileInfoDlg m_fileInfoDlg;
 	CStatic m_videoFrame;
 	CWinThread* pMouseEventThread;
 	DWORD MouseEventThreadID;
@@ -46,6 +51,8 @@ public:
 	afx_msg void OnTimer(UINT_PTR nIDEvent);
 	afx_msg HCURSOR OnQueryDragIcon();
 	afx_msg LRESULT DisplayFrame(WPARAM wParam, LPARAM lParam);
+	afx_msg LRESULT OnDirTreeUpdated(WPARAM wParam, LPARAM lParam);
+	afx_msg LRESULT OnInvalidDir(WPARAM wParam, LPARAM lParam);
 	DECLARE_MESSAGE_MAP()
 
 
