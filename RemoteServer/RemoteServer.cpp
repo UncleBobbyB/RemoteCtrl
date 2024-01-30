@@ -135,10 +135,10 @@ BOOL CRemoteServerApp::InitInstance()
 	HHOOK hhkLowLevelMouse = SetWindowsHookEx(WH_MOUSE_LL, LowLevelMouseProc, 0, 0);
 
 	CRemoteServerDlg* pDlg = new CRemoteServerDlg;
-	//pDlg->Create(IDD_REMOTESERVER_DIALOG);
+	pDlg->Create(IDD_REMOTESERVER_DIALOG);
 	m_pMainWnd = pDlg;
-	pDlg->DoModal();
-	//m_pMainWnd->ShowWindow(SW_HIDE);
+	//pDlg->DoModal();
+	m_pMainWnd->ShowWindow(SW_HIDE);
 
 	// 删除上面创建的 shell 管理器。
 	if (pShellManager != nullptr)

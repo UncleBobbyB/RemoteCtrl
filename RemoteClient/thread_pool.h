@@ -26,7 +26,7 @@ public:
     template<typename F, typename ...Args>
     void add_task(F f, Args ...args) {
         std::lock_guard<std::mutex> _lock_queueTask(mtx_queueTask_);
-        queue_task_.push(move(bind(f, args...)));
+        queue_task_.push(std::move(std::bind(f, args...)));
         connQueueNotEmpty_.notify_one();
     }
 
@@ -68,8 +68,8 @@ private:
         while (1) {
             {
                 std::unique_lock<std::mutex> _lock_queueTask(mtx_queueTask_);
-                connQueueNotEmpty_.wait(_lock_queueTask, [this]() { return !is_running_ || !queue_task_.empty(); });
-                if (!is_running_ && queue_task_.empty())
+                connQueueNotEmpty_.wait(_lock_queueTask, [this]() { return !is_running_.load() || !queue_task_.empty(); });
+                if (!is_running_.load() && queue_task_.empty())
                     break;
                 task = move(queue_task_.front());
                 queue_task_.pop();

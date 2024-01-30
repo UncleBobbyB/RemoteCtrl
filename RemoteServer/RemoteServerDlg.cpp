@@ -20,8 +20,7 @@
 
 
 CRemoteServerDlg::CRemoteServerDlg(CWnd* pParent /*=nullptr*/)
-	: CDialogEx(IDD_REMOTESERVER_DIALOG, pParent)
-{
+	: CDialogEx(IDD_REMOTESERVER_DIALOG, pParent), thread_pool_(8) {
 	m_hIcon = AfxGetApp()->LoadIcon(IDR_MAINFRAME);
 }
 
@@ -57,24 +56,27 @@ void CaptureScreen(CImage& screen) {
 	screen.ReleaseDC();
 }
 
-void send_all(SOCKET sock, const char* buffer, int len) {
+int send_all(SOCKET sock, const char* buffer, int len) {
 	std::cerr << "sending packet, size: " << len << std::endl;
 	int total_sent = 0;
 	while (total_sent < len) {
 		int n = send(sock, buffer + total_sent, len - total_sent, 0);
 		if (!n) {
 			// peer disconnect
-			std::cerr << "peer disconnect" << std::endl;
-			return;
+			TRACE("peer disconnect\n");
+			return -1;
 		}
 		if (n == SOCKET_ERROR) {
 			int errCode = WSAGetLastError();
 			std::cerr << "socket error: " << errCode << std::endl;
-			return;
+			TRACE("socket error: %d\n", errCode);
+			return -2;
 		}
 		total_sent += n;
 	}
 	std::cerr << "packet send okay" << std::endl;
+
+	return 0;
 }
 
 void CRemoteServerDlg::frame_thread_routine() {
@@ -105,53 +107,59 @@ void CRemoteServerDlg::frame_thread_routine() {
 	}
 
 	SOCKET clnt_sock;
-	clnt_sock = accept(ListenSocket, NULL, NULL);
-	if (clnt_sock == INVALID_SOCKET) {
-		TRACE("accept failed: %d\n", WSAGetLastError());
-		closesocket(ListenSocket);
-		WSACleanup();
-		return;
-	}
-
-	TRACE("accepted\n");
-
-	CImage image;
 	while (1) {
-		// Capture Screen
-		//CaptureScreen(image);
-		if (!image.IsNull())
-			image.Destroy();
+		clnt_sock = accept(ListenSocket, NULL, NULL);
+		if (clnt_sock == INVALID_SOCKET) {
+			TRACE("accept failed: %d\n", WSAGetLastError());
+			closesocket(ListenSocket);
+			WSACleanup();
+			return;
+		}
 
-		HDC hScreen = ::GetDC(NULL);
-		int nBitPerPixel = GetDeviceCaps(hScreen, BITSPIXEL);
-		int nWidth = GetDeviceCaps(hScreen, HORZRES);
-		int nHeight = GetDeviceCaps(hScreen, VERTRES);
-		image.Create(nWidth, nHeight, nBitPerPixel);
-		BitBlt(image.GetDC(), 0, 0, nWidth, nHeight, hScreen, 0, 0, SRCCOPY);
-		::ReleaseDC(NULL, hScreen);
+		TRACE("accepted\n");
 
-		HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, 0);
-		assert(hMem != NULL);
-		IStream* pStream = NULL;
-		assert(CreateStreamOnHGlobal(hMem, TRUE, &pStream) == S_OK);
-		image.Save(pStream, Gdiplus::ImageFormatPNG);
-		LARGE_INTEGER bg{ 0 };
-		pStream->Seek(bg, STREAM_SEEK_SET, NULL);
-		PBYTE pData = (PBYTE)GlobalLock(hMem);
+		CImage image;
+		bool terminated = false;
+		while (!terminated) {
+			// Capture Screen
+			//CaptureScreen(image);
+			if (!image.IsNull())
+				image.Destroy();
 
-		// to BYTE*
-		// CPacketHeader + raw data
-		SIZE_T size_raw_data = GlobalSize(hMem);
-		CPacketHeader header(frame, size_raw_data);
+			HDC hScreen = ::GetDC(NULL);
+			int nBitPerPixel = GetDeviceCaps(hScreen, BITSPIXEL);
+			int nWidth = GetDeviceCaps(hScreen, HORZRES);
+			int nHeight = GetDeviceCaps(hScreen, VERTRES);
+			image.Create(nWidth, nHeight, nBitPerPixel);
+			BitBlt(image.GetDC(), 0, 0, nWidth, nHeight, hScreen, 0, 0, SRCCOPY);
+			::ReleaseDC(NULL, hScreen);
 
-		// send data
-		send_all(clnt_sock, reinterpret_cast<char*>(&header), sizeof(header));
-		send_all(clnt_sock, (char*)pData, size_raw_data);
+			HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, 0);
+			assert(hMem != NULL);
+			IStream* pStream = NULL;
+			assert(CreateStreamOnHGlobal(hMem, TRUE, &pStream) == S_OK);
+			image.Save(pStream, Gdiplus::ImageFormatPNG);
+			LARGE_INTEGER bg{ 0 };
+			pStream->Seek(bg, STREAM_SEEK_SET, NULL);
+			PBYTE pData = (PBYTE)GlobalLock(hMem);
 
+			// to BYTE*
+			// CPacketHeader + raw data
+			SIZE_T size_raw_data = GlobalSize(hMem);
+			CPacketHeader header(frame, size_raw_data);
 
-		pStream->Release();
-		image.ReleaseDC();
-		GlobalUnlock(hMem);
+			// send data
+			if (send_all(clnt_sock, reinterpret_cast<char*>(&header), sizeof(header)) < 0)
+				terminated = true;
+			if (send_all(clnt_sock, (char*)pData, size_raw_data) < 0)
+				terminated = true;
+
+			pStream->Release();
+			image.ReleaseDC();
+			GlobalUnlock(hMem);
+		}
+		closesocket(clnt_sock);
+
 	}
 }
 
@@ -203,7 +211,7 @@ inline void handle_mouse_cmd(CMD_Flag flag, std::shared_ptr<BYTE[]> data) {
 
 void CRemoteServerDlg::mouse_cmd_thread_routine() {
 	while (1) {
-		auto [header, data] = mouse_cmd_to_handle_.dequeue(); // will be blocked here;
+		auto [header, data] = mouse_cmd_to_handle_.dequeue().value(); // will be blocked here;
 		CMD_Flag flag = header.cmd;
 		assert(header.len == sizeof(std::pair<double, double>)); // TODO: might need to remove this
 		handle_mouse_cmd(flag, data);
@@ -218,7 +226,18 @@ inline bool is_mouse_cmd(CMD_Flag flag) {
 void CRemoteServerDlg::handle_cmd(CPacketHeader header, std::shared_ptr<BYTE[]> data = nullptr) {
 	if (is_mouse_cmd(header.cmd)) {
 		mouse_cmd_to_handle_.enqueue(std::make_pair(header, data)); // 异步执行鼠标响应操作
-	}  else if (header.cmd == drive_info) {
+		return;
+	}
+
+	if (header.cmd == download) {
+		CString strPath(reinterpret_cast<const TCHAR*>(data.get()), header.len / sizeof(TCHAR));
+		thread_pool_.add_task(&CRemoteServerDlg::send_file, this, strPath);
+		return;
+	}
+
+	IOqu_cmd_to_send_.wait_until_running();
+
+	if (header.cmd == drive_info) {
 		auto [data_len, data] = SerializeDriveInfo(GetDrivesInfo());
 		CMD_Flag flag = drive_info;
 		std::shared_ptr<BYTE[]> buffer(new BYTE[sizeof(flag) + data_len]);
@@ -245,9 +264,67 @@ void CRemoteServerDlg::handle_cmd(CPacketHeader header, std::shared_ptr<BYTE[]> 
 		memcpy(buffer.get(), &flag, sizeof(flag));
 		memcpy(buffer.get() + sizeof(flag), data.get(), data_len);
 		IOqu_cmd_to_send_.enqueue(std::make_pair(buffer_size, buffer));
+	} else if (header.cmd == download) {
+		CString strPath(reinterpret_cast<const TCHAR*>(data.get()));
+		thread_pool_.add_task(&CRemoteServerDlg::send_file, this, std::move(strPath));
+	} else if (header.cmd == download_abort) { // 对方取消下载任务
+		download_aborted = true;
 	}
 }
 
+void CRemoteServerDlg::send_file(const CString& strPath) {
+	assert(!strPath.IsEmpty());
+	FILE* pFile = NULL;
+	auto err = fopen_s(&pFile, strPath, "rb");
+	if (err) {
+		TRACE("Unable to open file\n");
+		// 无法打开文件，或者文件不存在
+		CMD_Flag flag = invalid_file;
+		std::shared_ptr<BYTE[]> buffer(new BYTE[sizeof(flag)]);
+		memcpy(buffer.get(), &flag, sizeof(flag));
+		IOqu_cmd_to_send_.enqueue(std::make_pair(sizeof(flag), buffer));
+		return;
+	}
+	assert(pFile != NULL);
+	fseek(pFile, 0, SEEK_END);
+	long long file_len = _ftelli64(pFile);
+	rewind(pFile);
+
+	{
+		CMD_Flag flag = file_size;
+		std::shared_ptr<BYTE[]> buffer(new BYTE[sizeof(flag) + sizeof(file_len)]);
+		memcpy(buffer.get(), &flag, sizeof(flag));
+		memcpy(buffer.get() + sizeof(flag), &file_len, sizeof(file_len));
+		auto ret = IOqu_cmd_to_send_.enqueue(std::make_pair(sizeof(flag) + sizeof(file_len), buffer));
+		if (!ret) { // 阻塞队列被其它生产者关闭，取消下载任务
+			fclose(pFile);
+			return;
+		}
+	}
+	if (!file_len)
+		return;
+	size_t buffer_size = 1024 * 1024; // 1 MB
+	std::shared_ptr<BYTE[]> buffer(new BYTE[buffer_size]);
+	size_t rlen = 0;
+	size_t total_read = 0;
+	do {
+		size_t n = fread(buffer.get(), 1, buffer_size, pFile);
+		assert(n && n <= buffer_size);
+		CMD_Flag flag = file_data;
+		size_t data_size = sizeof(flag) + n;
+		std::shared_ptr<BYTE[]> data(new BYTE[data_size]);
+		memcpy(data.get(), &flag, sizeof(flag));
+		memcpy(data.get() + sizeof(flag), buffer.get(), n);
+		if (download_aborted.load()) // 取消下载任务
+			break;
+		auto ok = IOqu_cmd_to_send_.enqueue(std::make_pair(data_size, data));
+		if (!ok) // 阻塞队列被其它生产者关闭，取消下载任务
+			break;
+		total_read += n;
+	} while (total_read < file_len);
+
+	fclose(pFile);
+}
 
 void CRemoteServerDlg::cmd_recv_thread_routine() {
 	SOCKET ListenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -277,71 +354,74 @@ void CRemoteServerDlg::cmd_recv_thread_routine() {
 	}
 
 	SOCKET clnt_sock;
-	clnt_sock = accept(ListenSocket, NULL, NULL);
-	if (clnt_sock == INVALID_SOCKET) {
-		TRACE("accept failed: %d\n", WSAGetLastError());
-		closesocket(ListenSocket);
-		WSACleanup();
-		return;
-	}
-
-	TRACE("accepted\n");
-
-	std::shared_ptr<BYTE[]> buffer(new BYTE[1024]);
-	size_t total_received = 0;
-	size_t data_len = 0;
-	const size_t header_len = sizeof(CPacketHeader);
 	while (1) {
-		// settle buffered data
-		while (total_received >= header_len + data_len) {
-			assert(total_received == header_len + data_len);
-			CPacketHeader header = *reinterpret_cast<CPacketHeader*>(buffer.get());
-			std::shared_ptr<BYTE[]> data = nullptr;
-			if (data_len) {
-				data = std::shared_ptr<BYTE[]>(new BYTE[data_len]);
-				memcpy(data.get(), buffer.get() + header_len, data_len);
-			}
-			handle_cmd(header, data);
-			total_received = 0;
-			data_len = 0;
+		clnt_sock = accept(ListenSocket, NULL, NULL);
+		if (clnt_sock == INVALID_SOCKET) {
+			TRACE("accept failed: %d\n", WSAGetLastError());
+			closesocket(ListenSocket);
+			WSACleanup();
+			return;
 		}
 
-		if (!data_len) {
-			// expecting a header
-			assert(header_len >= total_received);
-			int n = recv(clnt_sock, (char*)buffer.get() + total_received, header_len - total_received, 0);
-			if (n == 0) {
-				TRACE("peer disconnect\n");
-				break;
-			}
-			if (n < 0) {
-				TRACE("socket error\n");
-				break;
+		TRACE("accepted\n");
+
+		std::shared_ptr<BYTE[]> buffer(new BYTE[1024]);
+		size_t total_received = 0;
+		size_t data_len = 0;
+		const size_t header_len = sizeof(CPacketHeader);
+		while (1) {
+			// settle buffered data
+			while (total_received >= header_len + data_len) {
+				assert(total_received == header_len + data_len);
+				CPacketHeader header = *reinterpret_cast<CPacketHeader*>(buffer.get());
+				std::shared_ptr<BYTE[]> data = nullptr;
+				if (data_len) {
+					data = std::shared_ptr<BYTE[]>(new BYTE[data_len]);
+					memcpy(data.get(), buffer.get() + header_len, data_len);
+				}
+				handle_cmd(header, data);
+				total_received = 0;
+				data_len = 0;
 			}
 
-			total_received += n;
-			if (total_received < header_len)
-				continue;
-			CPacketHeader header = *reinterpret_cast<CPacketHeader*>(buffer.get());
-			assert(header.header == HEADER_FLAG);
-			data_len = header.len;
-		} else {
-			assert(total_received >= header_len);
-			int n = recv(clnt_sock, (char*)buffer.get() + total_received, data_len - total_received + header_len, 0);
-			if (n == 0) {
-				TRACE("peer disconnect\n");
-				break;
-			}
-			if (n < 0) {
-			//thread_pool_.add_task(&CRemoteServerDlg::handle_cmd, this, header, data);
-				TRACE("socket error\n");
-				break;
-			}
+			if (!data_len) {
+				// expecting a header
+				assert(header_len >= total_received);
+				int n = recv(clnt_sock, (char*)buffer.get() + total_received, header_len - total_received, 0);
+				if (n == 0) {
+					TRACE("peer disconnect\n");
+					break;
+				}
+				if (n < 0) {
+					TRACE("socket error\n");
+					break;
+				}
 
-			total_received += n;
-			assert(total_received <= header_len + data_len);
+				total_received += n;
+				if (total_received < header_len)
+					continue;
+				CPacketHeader header = *reinterpret_cast<CPacketHeader*>(buffer.get());
+				assert(header.header == HEADER_FLAG);
+				data_len = header.len;
+			} else {
+				assert(total_received >= header_len);
+				int n = recv(clnt_sock, (char*)buffer.get() + total_received, data_len - total_received + header_len, 0);
+				if (n == 0) {
+					TRACE("peer disconnect\n");
+					break;
+				}
+				if (n < 0) {
+					//thread_pool_.add_task(&CRemoteServerDlg::handle_cmd, this, header, data);
+					TRACE("socket error\n");
+					break;
+				}
+
+				total_received += n;
+				assert(total_received <= header_len + data_len);
+			}
 		}
-
+		IOqu_cmd_to_send_.terminate(); // 生产者负责关闭阻塞队列
+		closesocket(clnt_sock);
 	}
 }
 
@@ -372,26 +452,36 @@ void CRemoteServerDlg::cmd_send_thread_routine() {
 		return;
 	}
 
-	SOCKET clnt_sock;
-	clnt_sock = accept(ListenSocket, NULL, NULL);
-	if (clnt_sock == INVALID_SOCKET) {
-		TRACE("accept failed: %d\n", WSAGetLastError());
-		closesocket(ListenSocket);
-		WSACleanup();
-		return;
-	}
-
-	TRACE("accepted\n");
-
 	while (1) {
-		auto [buffer_size, buffer] = IOqu_cmd_to_send_.dequeue(); // will be blocked here
-		CMD_Flag cmd = *reinterpret_cast<CMD_Flag*>(buffer.get());
-		CPacketHeader header(cmd, buffer_size - sizeof(cmd));
-		send_all(clnt_sock, reinterpret_cast<char*>(&header), sizeof(header));
-		if (header.len)
-			send_all(clnt_sock, reinterpret_cast<char*>(buffer.get()) + sizeof(CMD_Flag), header.len);
+		SOCKET clnt_sock;
+		clnt_sock = accept(ListenSocket, NULL, NULL);
+		if (clnt_sock == INVALID_SOCKET) {
+			TRACE("accept failed: %d\n", WSAGetLastError());
+			closesocket(ListenSocket);
+			WSACleanup();
+			return;
+		}
+
+		TRACE("accepted\n");
+
+		while (1) {
+			auto item = IOqu_cmd_to_send_.dequeue();
+			if (!item) // 控制方断开连接，阻塞队列被生产者关闭
+				break;
+			auto [buffer_size, buffer] = item.value(); // will be blocked here
+			CMD_Flag cmd = *reinterpret_cast<CMD_Flag*>(buffer.get());
+			CPacketHeader header(cmd, buffer_size - sizeof(cmd));
+			if (send_all(clnt_sock, reinterpret_cast<char*>(&header), sizeof(header)) < 0)
+				break;
+			if (header.len && send_all(clnt_sock, reinterpret_cast<char*>(buffer.get()) + sizeof(CMD_Flag), header.len) < 0)
+				break;
+		}
+
+		IOqu_cmd_to_send_.reset(); // 消费者负责重置阻塞队列
+		closesocket(clnt_sock);
 	}
 }
+
 
 // CRemoteServerDlg 消息处理程序
 

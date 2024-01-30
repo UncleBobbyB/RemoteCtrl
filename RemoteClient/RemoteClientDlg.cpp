@@ -1,19 +1,18 @@
 ﻿
 // RemoteClientDlg.cpp: 实现文件
 //
-
-#include "pch.h"
-#include "framework.h"
-#include "RemoteClient.h"
-#include "RemoteClientDlg.h"
-#include "afxdialogex.h"
-
 #ifdef _DEBUG
 #define new DEBUG_NEW
 #endif
-#include "CFileInfoDlg.h"
 
-#define WM_FRAME_DATA_AVAILABLE (WM_USER + 110)
+#include "pch.h"
+#include "framework.h"
+#include "RemoteClientDlg.h"
+#include "ClientController.h"
+#include "afxdialogex.h"
+#include "resource.h"
+#include "RemoteClient.h"
+
 
 // 用于应用程序“关于”菜单项的 CAboutDlg 对话框
 
@@ -49,8 +48,8 @@ END_MESSAGE_MAP()
 
 // CRemoteClientDlg 对话框
 
-CRemoteClientDlg::CRemoteClientDlg(CWnd* pParent /*=nullptr*/)
-	: CDialogEx(IDD_REMOTECLIENT_DIALOG, pParent) {
+CRemoteClientDlg::CRemoteClientDlg(CWnd* pParent, CString strIP, UINT nPort)
+	: CDialogEx(IDD_REMOTECLIENT_DIALOG, pParent), strIP(strIP), nPort(nPort) {
 	m_hIcon = AfxGetApp()->LoadIcon(IDR_MAINFRAME);
 }
 
@@ -88,6 +87,10 @@ BEGIN_MESSAGE_MAP(CRemoteClientDlg, CDialogEx)
 	ON_COMMAND(ID_FILE, &CRemoteClientDlg::OnFile)
 	ON_MESSAGE(WM_DIR_TREE_UPDATED, CRemoteClientDlg::OnDirTreeUpdated)
 	ON_MESSAGE(WM_DIR_TREE_INVALID_DIR, CRemoteClientDlg::OnInvalidDir)
+	ON_MESSAGE(WM_DOWNLOAD_INVALID_FILE, CRemoteClientDlg::OnInvalidFile)
+	ON_MESSAGE(WM_DOWNLOAD_FILE_SIZE, CRemoteClientDlg::OnFileSize)
+	ON_MESSAGE(WM_DOWNLOAD_COMPLETE, CRemoteClientDlg::OnDownloadComplete)
+	ON_COMMAND(ID_RECONNECT, &CRemoteClientDlg::OnReconnect)
 END_MESSAGE_MAP()
 
 
@@ -110,22 +113,22 @@ UINT MouseEventWorkerThread(LPVOID pParam) {
 
 		switch (msg.message) {
 		case WM_MOUSEMOVE:
-			CClientController::sendMouseEvent(mouse_move, thiz->GetNormalizedMousePosition());
+			CClientController::SendMouseEvent(mouse_move, thiz->GetNormalizedMousePosition());
 			break;
 		case WM_LBUTTONDOWN:
-			CClientController::sendMouseEvent(lb_down, thiz->GetNormalizedMousePosition());
+			CClientController::SendMouseEvent(lb_down, thiz->GetNormalizedMousePosition());
 			break;
 		case WM_LBUTTONUP:
-			CClientController::sendMouseEvent(lb_up, thiz->GetNormalizedMousePosition());
+			CClientController::SendMouseEvent(lb_up, thiz->GetNormalizedMousePosition());
 			break;
 		case WM_LBUTTONDBLCLK:
-			CClientController::sendMouseEvent(lb_2click, thiz->GetNormalizedMousePosition());
+			CClientController::SendMouseEvent(lb_2click, thiz->GetNormalizedMousePosition());
 			break;
 		case WM_RBUTTONDOWN:
-			CClientController::sendMouseEvent(rb_down, thiz->GetNormalizedMousePosition());
+			CClientController::SendMouseEvent(rb_down, thiz->GetNormalizedMousePosition());
 			break;
 		case WM_RBUTTONUP:
-			CClientController::sendMouseEvent(rb_up, thiz->GetNormalizedMousePosition());
+			CClientController::SendMouseEvent(rb_up, thiz->GetNormalizedMousePosition());
 			break;
 		default:
 			TRACE("Unknown mouse event\n");
@@ -163,7 +166,6 @@ BOOL CRemoteClientDlg::OnInitDialog() {
 	SetIcon(m_hIcon, TRUE);			// 设置大图标
 	SetIcon(m_hIcon, FALSE);		// 设置小图标
 
-	// TODO: 在此添加额外的初始化代码
 
 	m_videoFrame.SubclassDlgItem(IDC_VIDEO_FRAME, this);
 
@@ -179,7 +181,7 @@ BOOL CRemoteClientDlg::OnInitDialog() {
 	CNetController::set_pLastItem(&(m_fileInfoDlg.lastItemSelected));
 
 	// 控制器初始化
-	CClientController::init(ip, port);
+	CClientController::init(strIP, nPort);
 
 	return TRUE;  // 除非将焦点设置到控件，否则返回 TRUE
 }
@@ -249,6 +251,27 @@ LRESULT CRemoteClientDlg::OnDirTreeUpdated(WPARAM wParam, LPARAM lParam) {
 LRESULT CRemoteClientDlg::OnInvalidDir(WPARAM wParam, LPARAM lParam) {
 	if (m_fileInfoDlg.GetSafeHwnd())
 		m_fileInfoDlg.PostMessage(WM_DIR_TREE_INVALID_DIR, wParam, lParam);
+
+	return 0;
+}
+
+LRESULT CRemoteClientDlg::OnInvalidFile(WPARAM wParam, LPARAM lParam) {
+	if (m_fileInfoDlg.GetSafeHwnd() && m_fileInfoDlg.pDownloadDlg != nullptr)
+		m_fileInfoDlg.pDownloadDlg->PostMessage(WM_DOWNLOAD_INVALID_FILE, wParam, lParam);
+
+	return 0;
+}
+
+LRESULT CRemoteClientDlg::OnFileSize(WPARAM wParam, LPARAM lParam) {
+	if (m_fileInfoDlg.GetSafeHwnd() && m_fileInfoDlg.pDownloadDlg != nullptr)
+		m_fileInfoDlg.pDownloadDlg->PostMessage(WM_DOWNLOAD_FILE_SIZE, wParam, lParam);
+
+	return 0;
+}
+
+LRESULT CRemoteClientDlg::OnDownloadComplete(WPARAM wParam, LPARAM lParam) {
+	if (m_fileInfoDlg.GetSafeHwnd() && m_fileInfoDlg.pDownloadDlg != nullptr)
+		m_fileInfoDlg.pDownloadDlg->PostMessage(WM_DOWNLOAD_COMPLETE, wParam, lParam);
 
 	return 0;
 }
@@ -327,4 +350,23 @@ void CRemoteClientDlg::OnFile() {
 	// TODO: 在此添加命令处理程序代码
 
 	m_fileInfoDlg.ShowWindow(SW_SHOW);
+}
+
+
+//void CRemoteClientDlg::PostNcDestroy() {
+//	CDialog::PostNcDestroy();
+//	delete this;
+//	static_cast<CRemoteClientApp*>(AfxGetApp())->m_pClientDlg = nullptr;
+//}
+
+
+void CRemoteClientDlg::OnCancel() {
+	DestroyWindow();
+	CClientController::destroy();
+	::PostQuitMessage(0);
+}
+
+
+void CRemoteClientDlg::OnReconnect() {
+	AfxGetApp()->PostThreadMessage(WM_CLIENT_RESTART, 0, 0);
 }

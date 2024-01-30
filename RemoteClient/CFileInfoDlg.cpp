@@ -3,7 +3,8 @@
 
 #include "pch.h"
 #include "CFileInfoDlg.h"
-
+#include "RemoteClient.h"
+#include "ClientController.h"
 
 // CFileInfoDlg 对话框
 
@@ -30,7 +31,6 @@ void CFileInfoDlg::OnCancel() {
 LRESULT CFileInfoDlg::OnInvalidDir(WPARAM wParam, LPARAM lParam) {
 	TRACE("Invalid Dir\n");
 	fileList.DeleteAllItems();
-	//CClientController::requestDriveInfo();
 
 	return 0;
 }
@@ -39,12 +39,24 @@ LRESULT CFileInfoDlg::OnFileListUpdated(WPARAM wParam, LPARAM lParam) {
 	return LRESULT();
 }
 
+LRESULT CFileInfoDlg::WindowProc(UINT message, WPARAM wParam, LPARAM lParam) {
+	if (message == WM_SHOWWINDOW && wParam == TRUE) {
+		if (dirTree.GetRootItem() == NULL)
+			CClientController::RequestDriveInfo();
+	}
+
+	// Call the base class version for default processing
+	return CWnd::WindowProc(message, wParam, lParam);
+}
+
 BEGIN_MESSAGE_MAP(CFileInfoDlg, CDialogEx)
-	ON_NOTIFY(NM_DBLCLK, IDC_TREE, &CFileInfoDlg::OnNMDblclkTree)
+	ON_NOTIFY(NM_DBLCLK, IDC_TREE, CFileInfoDlg::OnNMDblclkTree)
 	ON_MESSAGE(WM_DIR_TREE_INVALID_DIR, CFileInfoDlg::OnInvalidDir)
-	ON_NOTIFY(NM_CLICK, IDC_TREE, &CFileInfoDlg::OnNMClickTree)
-	ON_NOTIFY(NM_RCLICK, IDC_LIST, &CFileInfoDlg::OnNMRClickList)
-	ON_COMMAND(ID_DOWNLOAD, &CFileInfoDlg::OnDownload)
+	ON_NOTIFY(NM_CLICK, IDC_TREE, CFileInfoDlg::OnNMClickTree)
+	ON_NOTIFY(NM_RCLICK, IDC_LIST, CFileInfoDlg::OnNMRClickList)
+	ON_COMMAND(ID_DOWNLOAD, CFileInfoDlg::OnDownload)
+	ON_MESSAGE(WM_DOWNLOAD_ABORT, CFileInfoDlg::OnDownloadAbort)
+	ON_MESSAGE(WM_DOWNLOAD_DLG_READY_TO_DESTROY, CFileInfoDlg::OnDownloadDlgDestroy)
 END_MESSAGE_MAP()
 
 
@@ -74,7 +86,7 @@ void CFileInfoDlg::UpdateFileInfo() {
 	lastItemSelected = hTreeSelected;
 	CString strPath = GetPath(hTreeSelected);
 	TRACE("%s\n", strPath);
-	CClientController::requestDirInfo(strPath);
+	CClientController::RequestDirInfo(strPath);
 }
 
 // CFileInfoDlg 消息处理程序
@@ -111,6 +123,10 @@ void CFileInfoDlg::OnNMRClickList(NMHDR* pNMHDR, LRESULT* pResult) {
 
 
 void CFileInfoDlg::OnDownload() {
+	if (pDownloadDlg != nullptr) {
+		AfxMessageBox("请等待上一个文件下载完成", MB_OK);
+		return;
+	}
 	int nListSelected = fileList.GetSelectionMark();
 	CString fileName = fileList.GetItemText(nListSelected, 0);
 	HTREEITEM ItemSelected = dirTree.GetSelectedItem();
@@ -119,5 +135,35 @@ void CFileInfoDlg::OnDownload() {
 	path += '\\';
 	path += fileName;
 	TRACE("%s\n", path);
-	// TODO: send cmd
+	CFileDialog dlg(FALSE, 0, fileName, OFN_HIDEREADONLY | OFN_OVERWRITEPROMPT, NULL, this);
+	if (dlg.DoModal() != IDOK) {
+		TRACE("CFileDialog DoModal failed\n");
+		return;
+	}
+	FILE* pFile = fopen(dlg.GetPathName(), "wb+");
+	if (pFile == NULL) {
+		AfxMessageBox("本地没有权限保存改文件，或者文件无法创建\n");
+		return;
+	}
+	pDownloadDlg = std::make_shared<CDownloadDialog>(this);
+	pDownloadDlg->Create(IDD_DOWNLOAD_DIALOG);
+	pDownloadDlg->ShowWindow(SW_SHOW);
+
+	// send cmd
+	CClientController::RequestDownload(path, pFile);
+}
+
+LRESULT CFileInfoDlg::OnDownloadAbort(WPARAM wParam, LPARAM lParam) {
+	CClientController::AbortDownload();
+
+	return 0;
+}
+
+LRESULT CFileInfoDlg::OnDownloadDlgDestroy(WPARAM wParam, LPARAM lParam) {
+	if (pDownloadDlg != nullptr) {
+		pDownloadDlg->DestroyWindow();
+		pDownloadDlg = nullptr;
+	}
+
+	return 0;
 }

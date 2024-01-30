@@ -18,32 +18,59 @@
 #define WM_DIR_TREE_UPDATED (WM_USER + 111)
 #define WM_DIR_TREE_INVALID_DIR (WM_USER + 112)
 #define WM_FILE_TREE_UPDATED (WM_USER + 113)
+#define WM_DOWNLOAD_INVALID_FILE (WM_USER + 114)
+#define WM_DOWNLOAD_FILE_SIZE (WM_USER + 115)
+#define WM_DOWNLOAD_DATA_RECEIVED (WM_USER + 116)
+#define WM_DOWNLOAD_COMPLETE (WM_USER + 117)
+#define WM_DOWNLOAD_ABORT (WM_USER + 118)
 
 /*
 * 网络控制模块
-* 拥有两个阻塞队列
+* ------------------------------------------------------------------------------------------------------
+* 主线程会调用其中的public函数，所有操作均为异步执行，如果调用需要访问阻塞队列的函数，则由线程池代理执行
+* 调用该模块的线程（通常为主线程）不会阻塞
+* ------------------------------------------------------------------------------------------------------
+* 拥有三个阻塞队列
 * 视频帧：
 *	一个线程作为生产者异步从TCP缓冲区读取数据到阻塞队列
 *	一个线程作为消费者异步从阻塞队列读取数据到用户缓冲区
 * 命令：
 *	主线程作为往阻塞队列写入数据的生产者
 *	socket线程作为从阻塞队列读取并发送数据的消费者
+* 文件传输：
+*	网络传输的数据包与命令共享一个阻塞队列
+*	命令模块的消费者（作为文件数据阻塞队列的生产者）将文件数据包放到另一个阻塞队列中
+*	由文件数据阻塞队列的消费者负责组装文件信息
+* ------------------------------------------------------------------------------------------------------
 */
 class CNetController {
+	// never should've written a whole lot of static shit
+	// it's almost impossible to clean up or reset the static members on quit/restart
+	// have to call the main thread to forcely terminate the whole shit
+	// genius.
+
+
 	typedef blocking_queue<std::pair<size_t, std::shared_ptr<BYTE[]>>> io_queue;
 public:
-	/*
-	* 网络控制器函数返回类型
-	*/
-	// constructor
 	CNetController() = delete;
 
+	static void destroy() {
+		frameIO_main_thread_terminated = true;
+		cmd_send_thread_terminated = true;
+		cmd_recv_thread_terminated = true;
+		handle_cmd_thread_terminated = true;
+
+		IOqu_frame_.terminate();
+		IOqu_cmd_send_.terminate();
+		Bqu_cmd_recv_.terminate();
+		IOqu_file_data_.terminate();
+	}
 
 	static bool init(const CString& strServerIP, UINT nPort, 
 		std::shared_ptr<std::mutex> p_mtx_frame_buffer, std::shared_ptr<std::shared_ptr<CImage>> p_frame_buffer) {
 		pMainWnd = AfxGetMainWnd();
 
-		// init frame data socket
+		// Init frame data socket
 		WSADATA wsaData;
 		struct sockaddr_in server;
 		// Initialize Winsock
@@ -99,7 +126,7 @@ public:
 				Sleep(100);
 			}
 		} while (ret < 0);
-		TRACE("cmd send socket conenct succeed\n");
+		TRACE("cmd send socket connect succeed\n");
 		server.sin_port = htons(nPort + 2);
 		do {
 			ret = connect(cmd_recv_sock_, (struct sockaddr*)&server, sizeof(server));
@@ -108,7 +135,7 @@ public:
 				Sleep(100);
 			}
 		} while (ret < 0);
-		TRACE("cmd recv socket conenct succeed\n");
+		TRACE("cmd recv socket connect succeed\n");
 
 		p_mtx_frame_buffer_ = p_mtx_frame_buffer;
 		p_frame_buffer_ = p_frame_buffer;
@@ -125,7 +152,7 @@ public:
 		std::thread handle_cmd_thread(&handle_cmd_thread_routine, std::ref(handle_cmd_thread_terminated));
 		handle_cmd_thread.detach();
 
-		// 先请求一次对方的盘符
+		// Request drive info in advance
 		request_drive_info();
 
 		return true;
@@ -156,7 +183,7 @@ public:
 		send_cmd(buffer_size, buffer);
 	}
 
-	static void request_dir_info(CString strPath) {
+	static void request_dir_info(const CString& strPath) {
 		CMD_Flag flag = dir_info;
 		size_t buffer_size = sizeof(flag) + strPath.GetLength() * sizeof(TCHAR);
 		std::shared_ptr<BYTE[]> buffer(new BYTE[buffer_size]);
@@ -165,32 +192,53 @@ public:
 		send_cmd(buffer_size, buffer);
 	}
 
-private:
-	inline static CWnd* pMainWnd{ nullptr };
-	inline static CTreeCtrl* pDirTree_{ nullptr };
-	inline static CListCtrl* pFileList_{ nullptr };
-	inline static HTREEITEM* pLastItemSelected_{ nullptr };
-	inline static thread_pool thread_pool_{};
+	static void request_download(const CString& strPath, FILE* pFile) {
+		assert(pDest_ == nullptr);
+		pDest_ = pFile;
+		CMD_Flag flag = download;
+		size_t data_size = strPath.GetLength() * sizeof(TCHAR);
+		std::shared_ptr<BYTE[]> buffer(new BYTE[sizeof(flag) + data_size]);
+		memcpy(buffer.get(), &flag, sizeof(flag));
+		memcpy(buffer.get() + sizeof(flag), strPath.GetString(), data_size);
+		send_cmd(sizeof(flag) + data_size, buffer);
+	}
 
-	inline static SOCKET frame_sock_{};
-	inline static io_queue IOqu_frame_{ 10 }; // 最多存储10帧数据
-	inline static std::atomic<bool> frameIO_main_thread_terminated{ false };
-	inline static std::shared_ptr<std::mutex> p_mtx_frame_buffer_;
-	inline static std::shared_ptr<std::shared_ptr<CImage>> p_frame_buffer_;
+	static void abort_download() {
+		IOqu_file_data_.terminate();
+		CMD_Flag flag = download_abort;
+		std::shared_ptr<BYTE[]> buffer(new BYTE[sizeof(flag)]);
+		send_cmd(sizeof(flag), buffer);
+	}
+
+private:
+	inline static CWnd*			pMainWnd{ nullptr };
+	inline static CTreeCtrl*	pDirTree_{ nullptr };
+	inline static CListCtrl*	pFileList_{ nullptr };
+	inline static HTREEITEM*	pLastItemSelected_{ nullptr };
+	inline static thread_pool   thread_pool_{};
+
+	inline static SOCKET						frame_sock_{};
+	inline static io_queue						IOqu_frame_{ 10 }; // 最多存储10帧数据
+	inline static std::atomic<bool>				frameIO_main_thread_terminated{ false };
+	inline static std::shared_ptr<std::mutex>	p_mtx_frame_buffer_;
+	inline static std::shared_ptr<std::shared_ptr<CImage>>	p_frame_buffer_;
 
 	inline static std::atomic<bool> flag_on_recv_{ false };
 
-	inline static SOCKET cmd_send_sock_{};
-	inline static io_queue IOqu_cmd_send_{ 100 }; // cmd阻塞队列
-	inline static std::atomic<bool> cmd_send_thread_terminated{ false };
+	inline static SOCKET				cmd_send_sock_{};
+	inline static io_queue				IOqu_cmd_send_{ 100 }; // cmd阻塞队列
+	inline static std::atomic<bool>		cmd_send_thread_terminated{ false };
 
-	inline static SOCKET cmd_recv_sock_{};
+	inline static SOCKET				cmd_recv_sock_{};
+	inline static std::atomic<bool>		cmd_recv_thread_terminated{ false };
+	inline static std::atomic<bool>		handle_cmd_thread_terminated{ false };
 	inline static blocking_queue<std::tuple<CMD_Flag, size_t, std::shared_ptr<BYTE[]>>> Bqu_cmd_recv_{ 100 };
-	inline static std::atomic<bool> cmd_recv_thread_terminated{ false };
-	inline static std::atomic<bool> handle_cmd_thread_terminated{ false };
+
+	inline static FILE*		pDest_{ nullptr };
+	inline static io_queue	IOqu_file_data_{ 100 };
 	
 
-	// converting raw data to CImage
+	// Converting raw data to CImage
 	static std::shared_ptr<CImage> raw_data_to_CImage(BYTE* data, size_t size_data) {
 		if (data == nullptr) {
 			return nullptr;
@@ -220,7 +268,7 @@ private:
 		std::thread frameIO_recv_thread(&frameIO_recv_thread_rountine, std::ref(frameIO_recv_thread_terminated)); // frame IO dedicated thread
 		
 		while (!terminated.load()) {
-			auto [buffer_size, buffer] = IOqu_frame_.dequeue(); // 自动阻塞
+			auto [buffer_size, buffer] = IOqu_frame_.dequeue().value(); // 自动阻塞
 			auto pImage = raw_data_to_CImage(buffer.get(), buffer_size);
 			if (pImage == nullptr) {
 				TRACE("raw data to CImage failed");
@@ -292,7 +340,7 @@ private:
 		size_t data_len = 0;
 		size_t header_len = sizeof(CPacketHeader);
 		while (!terminated.load()) {
-			// settle buffered data
+			// Settle buffered data
 			while (total_received >= header_len +  data_len) {
 				assert(total_received == header_len + data_len);
 				std::shared_ptr<BYTE[]> item(new BYTE[data_len]);
@@ -303,7 +351,7 @@ private:
 			}
 
 			if (!data_len) {
-				// start from header
+				// Start from header
 				assert(total_received <= header_len);
 				int n_received = recv(frame_sock_, (char*)buffer.get() + total_received, header_len - total_received, 0); // blocks at here
 				if (n_received == 0) {
@@ -323,7 +371,7 @@ private:
 				assert(header.header == HEADER_FLAG);
 				data_len = header.len;
 			} else {
-				// continue reading
+				// Continue reading
 				assert(total_received >= header_len);
 				int n_received = recv(frame_sock_, (char*)buffer.get() + total_received, data_len - total_received + header_len, 0); // blocks at here
 				if (n_received == 0) {
@@ -358,7 +406,7 @@ private:
 	// 负责发送cmd的线程
 	static void cmd_send_thread_routine(const std::atomic<bool>& terminated) {
 		while (!terminated.load()) {
-			auto [buffer_size, buffer] = IOqu_cmd_send_.dequeue(); // will be blocked here
+			auto [buffer_size, buffer] = IOqu_cmd_send_.dequeue().value(); // will be blocked here
 			// buffer = cmd flag + cmd data (if any)
 			CMD_Flag cmd = *reinterpret_cast<CMD_Flag*>(buffer.get());
 			CPacketHeader header(cmd, buffer_size - sizeof(CMD_Flag));
@@ -423,7 +471,7 @@ private:
 	static void handle_drive_info(size_t data_size, std::shared_ptr<BYTE[]> data) {
 		pDirTree_->DeleteAllItems();
 		std::vector<DriveInfo> drives = DeserializeDriveInfo(data_size, data);
-		// populate tree control
+		// Populate tree control
 		for (const auto& drive : drives) {
 			HTREEITEM hDrive = pDirTree_->InsertItem((drive.drive_letter + std::string(":")).c_str());
 			for (const auto& file : drive.files) {
@@ -431,7 +479,7 @@ private:
 					pDirTree_->InsertItem(file.name.c_str(), hDrive);
 			}
 		}
-		// post message to main thread
+		// Post message to main thread
 		pMainWnd->PostMessage(WM_DIR_TREE_UPDATED);
 	}
 
@@ -460,15 +508,83 @@ private:
 
 	static void handle_cmd_thread_routine(const std::atomic<bool>& terminated) {
 		while (!terminated.load()) {
-			auto [flag, data_size, data] = Bqu_cmd_recv_.dequeue(); // will be blocked here
+			auto [flag, data_size, data] = Bqu_cmd_recv_.dequeue().value(); // will be blocked here
 			if (flag == drive_info) {
 				handle_drive_info(data_size, data);
 			} else if (flag == invalid_dir) {
 				pMainWnd->PostMessage(WM_DIR_TREE_INVALID_DIR);
 			} else if (flag == dir_info) {
 				handle_dir_info(data_size, data);
+			} else if (flag == invalid_file) {
+				if (IOqu_file_data_.isTerminated()) // 下载任务已取消
+					return;
+				
+				pMainWnd->PostMessage(WM_DOWNLOAD_INVALID_FILE);
+			} else if (flag == file_size) {
+				if (IOqu_file_data_.isTerminated()) // 下载任务已取消
+					return;
+
+				assert(data_size == sizeof(long long));
+				auto pFileSize = new long long(*reinterpret_cast<long long*>(data.get()));
+				TRACE("download file size: %lld\n", *pFileSize);
+
+				thread_pool_.add_task(&thread_download, *pFileSize);
+
+				pMainWnd->PostMessage(WM_DOWNLOAD_FILE_SIZE, 0, (LPARAM)pFileSize); // Remember to delete pFileSize on the other side
+			} else if (flag == file_data) {
+				if (IOqu_file_data_.isTerminated()) // 下载任务已取消
+					return;
+
+				thread_pool_.add_task(&decltype(IOqu_file_data_)::enqueue, &IOqu_file_data_, std::make_pair(data_size, data));
+
+				auto pDataSize = new size_t(data_size); // Remember to delete pDataSize on the other side
+				pMainWnd->PostMessage(WM_DOWNLOAD_DATA_RECEIVED, 0, LPARAM(pDataSize));
 			}
 		}
 	}
+
+	static void thread_download(long long file_size) {
+		if (IOqu_file_data_.isTerminated()) {
+			// already aborted
+			fclose(pDest_);
+			pDest_ = nullptr;
+			IOqu_file_data_.reset();
+			return;
+		}
+		assert(pDest_ != nullptr && file_size != -1);
+
+		if (file_size == 0) {
+			TRACE("target file is empty\n");
+			fclose(pDest_);
+			pDest_ = nullptr;
+			return;
+		}
+
+		long long total_written = 0;
+		while (total_written < file_size) {
+			auto item = IOqu_file_data_.dequeue();
+			if (!item) // abort download
+				break;
+			auto [data_size, data] = item.value();
+			size_t n = fwrite(data.get(), 1, data_size, pDest_);
+			if (n < data_size) {
+				TRACE("Writing to file failed\n");
+				break;
+			}
+			total_written += n;
+		}
+
+		fclose(pDest_);
+		pDest_ = nullptr;
+		if (IOqu_file_data_.isTerminated()) {
+			// 记得重置阻塞队列
+			IOqu_file_data_.reset();
+			return;
+		}
+
+		pMainWnd->PostMessage(WM_DOWNLOAD_COMPLETE);
+	}
+
+
 };
 

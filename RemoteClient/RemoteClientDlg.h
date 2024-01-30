@@ -4,23 +4,16 @@
 
 #pragma once
 #include <memory>
-#include "ClientController.h"
-#include <memory>
-#include "CFileInfoDlg.h"
 #include "CFileInfoDlg.h"
 
-//#define ip "127.0.0.1"
-#define ip "192.168.56.102"
-#define port 9527
-
-#define WM_FRAME_DATA_AVAILABLE (WM_USER + 110)
+#define WM_CLIENT_RESTART (WM_USER + 400)
 
 // CRemoteClientDlg 对话框
 class CRemoteClientDlg : public CDialogEx
 {
 // 构造
 public:
-	CRemoteClientDlg(CWnd* pParent = nullptr);	// 标准构造函数
+	CRemoteClientDlg(CWnd* pParent, CString strIP, UINT nPort);	// 标准构造函数
 
 // 对话框数据
 #ifdef AFX_DESIGN_TIME
@@ -29,11 +22,15 @@ public:
 
 protected:
 virtual void DoDataExchange(CDataExchange* pDX);	// DDX/DDV 支持
+//virtual void PostNcDestroy() override;
 
 
 // 实现
 //protected:
 public:
+	CString strIP;
+	UINT nPort;
+
 	HICON m_hIcon;
 	CFileInfoDlg m_fileInfoDlg;
 	CStatic m_videoFrame;
@@ -53,10 +50,12 @@ public:
 	afx_msg LRESULT DisplayFrame(WPARAM wParam, LPARAM lParam);
 	afx_msg LRESULT OnDirTreeUpdated(WPARAM wParam, LPARAM lParam);
 	afx_msg LRESULT OnInvalidDir(WPARAM wParam, LPARAM lParam);
+	afx_msg LRESULT OnInvalidFile(WPARAM wParam, LPARAM lParam);
+	afx_msg LRESULT OnFileSize(WPARAM wParam, LPARAM lParam);
+	afx_msg LRESULT OnDownloadComplete(WPARAM wParam, LPARAM lParam);
 	DECLARE_MESSAGE_MAP()
 
 
-	// 用图片渲染视频帧
 public:
 	afx_msg void OnContextMenu(CWnd* /*pWnd*/, CPoint /*point*/);
 	afx_msg void OnMouseMove(UINT nFlags, CPoint point);
@@ -66,4 +65,6 @@ public:
 	afx_msg void OnRButtonDown(UINT nFlags, CPoint point);
 	afx_msg void OnRButtonUp(UINT nFlags, CPoint point);
 	afx_msg void OnFile();
+	virtual void OnCancel();
+	afx_msg void OnReconnect();
 };

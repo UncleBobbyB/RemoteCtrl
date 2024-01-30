@@ -6,10 +6,6 @@
 #include <afxwin.h>
 #include "NetController.h"
 
-#define W 1920 // resolution
-#define H 1080 // resolution
-#define C 3 // RGB channel
-
 class CClientController {
 
 public:
@@ -17,6 +13,10 @@ public:
 
 	CClientController(const CClientController&) = delete;
 	CClientController& operator=(const CClientController&) = delete;
+
+	static void destroy() {
+		CNetController::destroy();
+	}
 
 	// Initializes and starts the network thread, if not already running
 	static void init(const char* strServerIP, UINT nPort) {
@@ -33,7 +33,7 @@ public:
 	}
 
 	// ui线程调用该函数发送cmd消息
-	static void sendMouseEvent(CMD_Flag flag, const std::pair<double, double>& p) {
+	static void SendMouseEvent(CMD_Flag flag, const std::pair<double, double>& p) {
 		size_t buffer_size = sizeof(flag) + sizeof(p);
 		std::shared_ptr<BYTE[]> buffer(new BYTE[buffer_size]);
 		memcpy(buffer.get(), &flag, sizeof(flag));
@@ -42,12 +42,20 @@ public:
 		CNetController::send_cmd(buffer_size, buffer);
 	}
 
-	static void requestDriveInfo() {
+	static void RequestDriveInfo() {
 		CNetController::request_drive_info();
 	}
 
-	static void requestDirInfo(CString strPath) {
+	static void RequestDirInfo(CString strPath) {
 		CNetController::request_dir_info(strPath);
+	}
+
+	static void RequestDownload(const CString& strPath, FILE* pFile) {
+		CNetController::request_download(strPath, pFile);
+	}
+
+	static void AbortDownload() {
+		CNetController::abort_download();
 	}
 
 

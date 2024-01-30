@@ -31,12 +31,14 @@ protected:
 	thread_pool thread_pool_;
 	blocking_queue<std::pair<CPacketHeader, std::shared_ptr<BYTE[]>>> mouse_cmd_to_handle_{ 100 };
 	io_queue IOqu_cmd_to_send_{ 100 };
+	std::atomic<bool> download_aborted;
 
 	void frame_thread_routine();
 	void cmd_recv_thread_routine();
 	void mouse_cmd_thread_routine();
 	void handle_cmd(CPacketHeader header, std::shared_ptr<BYTE[]> data);
 	void cmd_send_thread_routine();
+	void send_file(const CString& strPath);
 
 	// 生成的消息映射函数
 	virtual BOOL OnInitDialog();

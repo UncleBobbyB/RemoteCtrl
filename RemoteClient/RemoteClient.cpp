@@ -4,6 +4,7 @@
 
 #include "pch.h"
 #include "framework.h"
+#include "CStartupDlg.h"
 #include "RemoteClient.h"
 #include "RemoteClientDlg.h"
 
@@ -16,13 +17,13 @@
 
 BEGIN_MESSAGE_MAP(CRemoteClientApp, CWinApp)
 	ON_COMMAND(ID_HELP, &CWinApp::OnHelp)
+	ON_THREAD_MESSAGE(WM_CLIENT_RESTART, &CRemoteClientApp::OnClientRestart)
 END_MESSAGE_MAP()
 
 
 // CRemoteClientApp 构造
 
-CRemoteClientApp::CRemoteClientApp()
-{
+CRemoteClientApp::CRemoteClientApp() {
 	// 支持重新启动管理器
 	m_dwRestartManagerSupportFlags = AFX_RESTART_MANAGER_SUPPORT_RESTART;
 
@@ -38,8 +39,7 @@ CRemoteClientApp theApp;
 
 // CRemoteClientApp 初始化
 
-BOOL CRemoteClientApp::InitInstance()
-{
+BOOL CRemoteClientApp::InitInstance() {
 	// 如果一个运行在 Windows XP 上的应用程序清单指定要
 	// 使用 ComCtl32.dll 版本 6 或更高版本来启用可视化方式，
 	//则需要 InitCommonControlsEx()。  否则，将无法创建窗口。
@@ -71,30 +71,26 @@ BOOL CRemoteClientApp::InitInstance()
 	// 例如修改为公司或组织名
 	SetRegistryKey(_T("应用程序向导生成的本地应用程序"));
 
-	CRemoteClientDlg dlg;
-	m_pMainWnd = &dlg;
-	INT_PTR nResponse = dlg.DoModal();
-	if (nResponse == IDOK)
-	{
-		// TODO: 在此放置处理何时用
-		//  “确定”来关闭对话框的代码
-	}
-	else if (nResponse == IDCANCEL)
-	{
-		// TODO: 在此放置处理何时用
-		//  “取消”来关闭对话框的代码
-	}
-	else if (nResponse == -1)
-	{
-		TRACE(traceAppMsg, 0, "警告: 对话框创建失败，应用程序将意外终止。\n");
-		TRACE(traceAppMsg, 0, "警告: 如果您在对话框上使用 MFC 控件，则无法 #define _AFX_NO_MFC_CONTROLS_IN_DIALOGS。\n");
-	}
+	// enable restart
+	RegisterApplicationRestart(L"/restart", 0);
+
+	CString strIP;
+	UINT nPort;
+	bool ok = false;
+
+	CStartupDlg startDlg(nullptr, strIP, nPort, ok);
+	startDlg.DoModal();
+	if (!ok)
+		return TRUE;
+
+	m_pClientDlg = new CRemoteClientDlg(nullptr, strIP, nPort);
+	m_pMainWnd = m_pClientDlg;
+	m_pClientDlg->Create(IDD_REMOTECLIENT_DIALOG);
+	m_pClientDlg->ShowWindow(SW_SHOW);
 
 	// 删除上面创建的 shell 管理器。
-	if (pShellManager != nullptr)
-	{
+	if (pShellManager != nullptr) 
 		delete pShellManager;
-	}
 
 #if !defined(_AFXDLL) && !defined(_AFX_NO_MFC_CONTROLS_IN_DIALOGS)
 	ControlBarCleanUp();
@@ -102,6 +98,33 @@ BOOL CRemoteClientApp::InitInstance()
 
 	// 由于对话框已关闭，所以将返回 FALSE 以便退出应用程序，
 	//  而不是启动应用程序的消息泵。
-	return FALSE;
+	return TRUE;
+}
+
+int CRemoteClientApp::ExitInstance() {
+	::ExitProcess(0);
+
+	return CWinApp::ExitInstance();
+}
+
+void CRemoteClientApp::OnClientRestart(WPARAM wParam, LPARAM lParam) {
+	// I have shiity codes containing static members that're impossible to clean & reset
+	// so Imma just restarting the whole fucking app 
+	// genius.
+
+	// get the full path of the executable
+	TCHAR szFileName[MAX_PATH];
+	GetModuleFileName(NULL, szFileName, MAX_PATH);
+
+	// set up the process and startup info
+	STARTUPINFO si = { 0 };
+	si.cb = sizeof(si);
+	PROCESS_INFORMATION pi = { 0 };
+
+	// start a new instance of the application
+	if (CreateProcess(szFileName, NULL, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+		// close the current instance
+		AfxGetMainWnd()->PostMessage(WM_CLOSE);
+	}
 }
 
